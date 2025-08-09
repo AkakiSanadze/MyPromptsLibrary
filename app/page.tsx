@@ -1,8 +1,8 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useImperativeHandle } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -77,6 +77,17 @@ function normalizeTag(t: string) {
 
 function normalizeCategory(c: string) {
   return c.trim().replace(/\s+/g, " ")
+}
+
+function deriveUsedTags(prompts: Prompt[]) {
+  const set = new Set<string>()
+  for (const p of prompts) {
+    for (const t of p.tags) {
+      const n = normalizeTag(t)
+      if (n) set.add(n)
+    }
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b))
 }
 
 function useLocalStore() {
@@ -239,19 +250,25 @@ function applyFilters(
   return list
 }
 
-function TagInput({
-  value,
-  onChange,
-  suggestions = [],
-  placeholder = "Add tag and press Enter",
-  "aria-label": ariaLabel,
-}: {
-  value: string[]
-  onChange: (next: string[]) => void
-  suggestions?: string[]
-  placeholder?: string
-  "aria-label"?: string
-}) {
+type TagInputHandle = {
+  getPending: () => string
+  commit: () => void
+  clear: () => void
+}
+
+const TagInput = React.forwardRef<
+  TagInputHandle,
+  {
+    value: string[]
+    onChange: (next: string[]) => void
+    suggestions?: string[]
+    placeholder?: string
+    "aria-label"?: string
+  }
+>(function TagInput(
+  { value, onChange, suggestions = [], placeholder = "Add tag and press Enter", "aria-label": ariaLabel },
+  ref,
+) {
   const [input, setInput] = useState("")
   const inputRef = useRef<HTMLInputElement | null>(null)
   const normalizedValue = value.map(normalizeTag)
@@ -281,6 +298,18 @@ function TagInput({
       removeTag(last)
     }
   }
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getPending: () => input.trim(),
+      commit: () => {
+        if (input.trim()) addTag(input)
+      },
+      clear: () => setInput(""),
+    }),
+    [input, normalizedValue],
+  )
 
   const filteredSuggestions = useMemo(() => {
     const q = input.trim().toLowerCase()
@@ -328,7 +357,7 @@ function TagInput({
       ) : null}
     </div>
   )
-}
+})
 
 /**
  * PromptForm
@@ -356,6 +385,7 @@ function PromptForm({
   const [content, setContent] = useState(initial?.content || "")
   const [category, setCategory] = useState(initial?.category || "")
   const [tags, setTags] = useState<string[]>(initial?.tags || [])
+  const tagInputRef = useRef<TagInputHandle | null>(null)
 
   useEffect(() => {
     if (open) {
@@ -368,11 +398,19 @@ function PromptForm({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    const pending = tagInputRef.current?.getPending() || ""
+    const normalized = tags.map(normalizeTag)
+    const finalTags = pending.trim()
+      ? normalized.includes(normalizeTag(pending))
+        ? normalized
+        : [...normalized, normalizeTag(pending)]
+      : normalized
+
     onSubmit({
       title: title.trim(),
       content: content.trim(),
       category: normalizeCategory(category),
-      tags: tags.map(normalizeTag),
+      tags: finalTags,
     })
     setOpen(false)
   }
@@ -454,7 +492,7 @@ function PromptForm({
 
               <div className="grid gap-2">
                 <Label>Tags</Label>
-                <TagInput value={tags} onChange={setTags} suggestions={allTags} aria-label="Tags" />
+                <TagInput ref={tagInputRef} value={tags} onChange={setTags} suggestions={allTags} aria-label="Tags" />
               </div>
             </div>
           </div>
@@ -588,6 +626,14 @@ function PromptCard({
 export default function Page() {
   const { toast } = useToast()
   const { prompts, setPrompts, categories, setCategories, tags, setTags } = useLocalStore()
+
+  const usedTags = useMemo(() => deriveUsedTags(prompts), [prompts])
+
+  useEffect(() => {
+    setTags(usedTags)
+    filters.setSelectedTags((prev) => prev.filter((t) => usedTags.includes(t)))
+  }, [usedTags]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const filters = useFilters()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -777,7 +823,7 @@ export default function Page() {
               setOpen={setCreateOpen}
               onSubmit={handleCreate}
               allCategories={categories}
-              allTags={tags}
+              allTags={usedTags}
             />
           </Dialog>
         </div>
@@ -843,12 +889,12 @@ export default function Page() {
             </Button>
           </div>
         </div>
-        {tags.length > 0 ? (
+        {usedTags.length > 0 ? (
           <>
             <Separator className="my-3" />
             <ScrollArea className="h-[86px]">
               <div className="flex flex-wrap gap-2">
-                {tags.map((t) => {
+                {usedTags.map((t) => {
                   const active = filters.selectedTags.includes(t)
                   return (
                     <button
@@ -929,7 +975,7 @@ export default function Page() {
         onSubmit={handleEdit}
         initial={editing || undefined}
         allCategories={categories}
-        allTags={tags}
+        allTags={usedTags}
       />
 
       {/* View Dialog (read-only, for long prompts) */}
