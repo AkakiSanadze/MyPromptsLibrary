@@ -1,8 +1,6 @@
 "use client"
 
-import React from "react"
-
-import { useEffect, useMemo, useRef, useState, useImperativeHandle } from "react"
+import React, { useEffect, useMemo, useRef, useState, useImperativeHandle } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -32,6 +30,7 @@ import {
   Upload,
   X,
   Eye,
+  Check,
 } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 
@@ -197,6 +196,14 @@ function useFilters() {
   const [tagMatch, setTagMatch] = useState<"any" | "all">("any")
   const [sort, setSort] = useState<"updated" | "created" | "title">("updated")
 
+  function resetAll() {
+    setSearch("")
+    setCategory("all")
+    setSelectedTags([])
+    setTagMatch("any")
+    setSort("updated")
+  }
+
   return {
     search,
     setSearch,
@@ -208,6 +215,7 @@ function useFilters() {
     setTagMatch,
     sort,
     setSort,
+    resetAll,
   }
 }
 
@@ -359,13 +367,6 @@ const TagInput = React.forwardRef<
   )
 })
 
-/**
- * PromptForm
- * Fix: Footer actions never go out of view.
- * - DialogContent gets max-h and overflow-hidden
- * - Form uses flex col; fields live in a ScrollArea (flex-1)
- * - Footer is outside ScrollArea, always visible
- */
 function PromptForm({
   open,
   setOpen,
@@ -422,15 +423,12 @@ function PromptForm({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      {/* p-0 to control internal spacing; grid keeps header/footer fixed, body scrollable */}
       <DialogContent className="sm:max-w-2xl p-0">
         <form onSubmit={handleSubmit} className="grid max-h-[85vh] grid-rows-[auto,1fr,auto]">
-          {/* Sticky header */}
           <DialogHeader className="px-6 pt-6">
             <DialogTitle>{initial?.id ? "Edit prompt" : "New prompt"}</DialogTitle>
           </DialogHeader>
 
-          {/* Scrollable body */}
           <div className="overflow-y-auto px-6 pb-4">
             <div className="grid gap-4">
               <div className="grid gap-2">
@@ -447,7 +445,6 @@ function PromptForm({
               <div className="grid gap-2">
                 <Label htmlFor="content">Prompt</Label>
                 <Textarea
-                  id="content"
                   id="content"
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
@@ -497,7 +494,6 @@ function PromptForm({
             </div>
           </div>
 
-          {/* Sticky footer with actions always visible */}
           <DialogFooter className="gap-2 border-t px-6 py-4">
             <Button variant="secondary" type="button" onClick={() => setOpen(false)}>
               Cancel
@@ -517,6 +513,7 @@ function PromptCard({
   onToggleFavorite,
   onCopy,
   onView,
+  isCopied,
 }: {
   prompt: Prompt
   onEdit: () => void
@@ -524,6 +521,7 @@ function PromptCard({
   onToggleFavorite: () => void
   onCopy: () => void
   onView: () => void
+  isCopied: boolean
 }) {
   return (
     <Card className="flex h-full flex-col">
@@ -605,9 +603,15 @@ function PromptCard({
             <Eye className="mr-2 h-4 w-4" />
             View
           </Button>
-          <Button variant="outline" size="sm" onClick={onCopy}>
-            <Copy className="mr-2 h-4 w-4" />
-            Copy
+          <Button
+            variant={isCopied ? "secondary" : "outline"}
+            size="sm"
+            onClick={onCopy}
+            className={cn(isCopied && "animate-pulse")}
+            aria-live="polite"
+          >
+            {isCopied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
+            {isCopied ? "Copied" : "Copy"}
           </Button>
           <Button variant="secondary" size="sm" onClick={onEdit}>
             <Edit className="mr-2 h-4 w-4" />
@@ -626,15 +630,18 @@ function PromptCard({
 export default function Page() {
   const { toast } = useToast()
   const { prompts, setPrompts, categories, setCategories, tags, setTags } = useLocalStore()
+  const filters = useFilters()
+  const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set())
 
+  // derive used tags from prompts
   const usedTags = useMemo(() => deriveUsedTags(prompts), [prompts])
 
+  // keep tag set and selected filters in sync with used tags
   useEffect(() => {
     setTags(usedTags)
     filters.setSelectedTags((prev) => prev.filter((t) => usedTags.includes(t)))
-  }, [usedTags]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const filters = useFilters()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usedTags])
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -705,6 +712,21 @@ export default function Page() {
     toast({ title: "Changes saved" })
   }
 
+  function markCopied(id: string) {
+    setCopiedIds((prev) => {
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
+    setTimeout(() => {
+      setCopiedIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }, 1200)
+  }
+
   function handleDelete(id: string) {
     setPrompts(prompts.filter((p) => p.id !== id))
     toast({ title: "Prompt deleted" })
@@ -713,7 +735,9 @@ export default function Page() {
   async function handleCopy(prompt: Prompt) {
     try {
       await navigator.clipboard.writeText(prompt.content)
-      setPrompts(prompts.map((p) => (p.id === prompt.id ? { ...p, uses: p.uses + 1, updatedAt: now() } : p)))
+      // Do NOT update updatedAt here, so list order doesn't jump
+      setPrompts(prompts.map((p) => (p.id === prompt.id ? { ...p, uses: p.uses + 1 } : p)))
+      markCopied(prompt.id)
       toast({ title: "Copied to clipboard" })
     } catch {
       toast({ title: "Copy failed", variant: "destructive" })
@@ -784,11 +808,25 @@ export default function Page() {
     setViewOpen(true)
   }
 
+  const isViewingCopied = viewing ? copiedIds.has(viewing.id) : false
+
   return (
     <main className="mx-auto max-w-7xl p-4 md:p-8">
       <header className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Prompt Manager</h1>
+          <h1 className="text-2xl font-semibold">
+            <button
+              className="hover:opacity-80 focus-visible:ring-ring/50 focus-visible:ring-[3px] rounded px-1 -mx-1"
+              onClick={() => {
+                filters.resetAll()
+                window.scrollTo({ top: 0, behavior: "smooth" })
+              }}
+              aria-label="Go home (reset filters)"
+              title="Home"
+            >
+              Prompt Manager
+            </button>
+          </h1>
           <p className="text-sm text-muted-foreground">
             Organize prompts by categories and tags. Search, filter, and export your library.
           </p>
@@ -857,6 +895,18 @@ export default function Page() {
                 {prompts.some((p) => !p.category) ? <SelectItem value="uncategorized">Uncategorized</SelectItem> : null}
               </SelectContent>
             </Select>
+            {filters.category !== "all" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => filters.setCategory("all")}
+                aria-label="Clear category filter"
+                title="Clear category"
+              >
+                <X className="mr-2 h-4 w-4" />
+                Clear
+              </Button>
+            )}
             <Separator orientation="vertical" className="mx-1 h-6" />
             <Select value={filters.sort} onValueChange={(v) => filters.setSort(v as any)}>
               <SelectTrigger className="w-full">
@@ -887,6 +937,19 @@ export default function Page() {
             >
               All tags
             </Button>
+            {(filters.search || filters.category !== "all" || filters.selectedTags.length > 0) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={filters.resetAll}
+                className="ml-auto"
+                aria-label="Clear all filters"
+                title="Clear all filters"
+              >
+                <X className="mr-2 h-4 w-4" />
+                Clear filters
+              </Button>
+            )}
           </div>
         </div>
         {usedTags.length > 0 ? (
@@ -939,6 +1002,7 @@ export default function Page() {
             onToggleFavorite={() => handleToggleFavorite(p.id)}
             onCopy={() => handleCopy(p)}
             onView={() => openViewer(p)}
+            isCopied={copiedIds.has(p.id)}
           />
         ))}
       </section>
@@ -946,22 +1010,26 @@ export default function Page() {
       <aside className="mt-8">
         <h2 className="mb-2 text-sm font-medium">Categories</h2>
         <div className="flex flex-wrap gap-2">
-          {categoryCounts.map(([name, count]) => (
-            <button
-              key={name}
-              onClick={() => filters.setCategory(name === "Uncategorized" ? "uncategorized" : (name as any))}
-              className={cn(
-                "rounded-full border px-3 py-1.5 text-xs",
-                filters.category === name || (name === "Uncategorized" && filters.category === "uncategorized")
-                  ? "bg-foreground text-background"
-                  : "hover:bg-muted",
-              )}
-              aria-pressed={filters.category === name}
-            >
-              <Folder className="mr-1 inline h-3 w-3" />
-              {name} ({count})
-            </button>
-          ))}
+          {categoryCounts.map(([name, count]) => {
+            const isUncat = name === "Uncategorized"
+            const value = isUncat ? "uncategorized" : (name as string)
+            const selected = filters.category === value || (isUncat && filters.category === "uncategorized")
+            return (
+              <button
+                key={name}
+                onClick={() => filters.setCategory(selected ? "all" : (value as any))}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs",
+                  selected ? "bg-foreground text-background" : "hover:bg-muted",
+                )}
+                aria-pressed={selected}
+                title={selected ? "Click to clear category filter" : "Filter by category"}
+              >
+                <Folder className="mr-1 inline h-3 w-3" />
+                {name} ({count})
+              </button>
+            )
+          })}
         </div>
       </aside>
 
@@ -1021,19 +1089,20 @@ export default function Page() {
           ) : null}
           <DialogFooter className="flex-wrap gap-2">
             <Button
-              variant="outline"
+              variant={isViewingCopied ? "secondary" : "outline"}
+              className={cn(isViewingCopied && "animate-pulse")}
               onClick={() => {
                 if (viewing) {
                   navigator.clipboard.writeText(viewing.content).then(() => {
-                    setPrompts((prev) =>
-                      prev.map((p) => (p.id === viewing.id ? { ...p, uses: p.uses + 1, updatedAt: now() } : p)),
-                    )
+                    setPrompts((prev) => prev.map((p) => (p.id === viewing.id ? { ...p, uses: p.uses + 1 } : p)))
+                    markCopied(viewing.id)
                   })
                 }
               }}
+              aria-live="polite"
             >
-              <Copy className="mr-2 h-4 w-4" />
-              Copy
+              {isViewingCopied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
+              {isViewingCopied ? "Copied" : "Copy"}
             </Button>
             <Button
               variant="secondary"
